@@ -1,0 +1,163 @@
+services:
+  kokoro:
+    image: ${KOKORO_IMAGE:-ghcr.io/remsky/kokoro-fastapi-cpu:latest}
+    ports:
+      - "8880:8880"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -X POST http://localhost:8880/v1/audio/speech -H 'Content-Type: application/json' -d '{\"model\":\"kokoro\",\"input\":\"ready\",\"voice\":\"af_nova\"}' -o /dev/null"]
+      interval: 30s
+      timeout: 300s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - agent_network
+
+  livekit:
+    image: livekit/livekit-server:latest
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882"
+      - "40000-40100:40000-40100/udp"
+    command: >
+      --dev
+      --bind 0.0.0.0
+      --rtc.port_range_start 40000
+      --rtc.port_range_end 40100
+      --rtc.tcp_port 7882
+      --rtc.reconnect_on_publication_error
+      --rtc.reconnect_on_data_channel_error
+    restart: unless-stopped
+    networks:
+      - agent_network
+
+  whisper:
+    build:
+      context: ./inference/whisper
+    volumes:
+      - whisper-data:/data
+    environment:
+      - VOXBOX_HF_REPO_ID=${VOXBOX_HF_REPO_ID:-Systran/faster-whisper-small}
+      - DATA_DIR=/data
+    ports:
+      - "11437:80"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/health | grep -q 'model_loaded.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - agent_network
+
+  # Self-hosted MCP gateway — supergateway bridges stdio MCP servers to HTTP.
+  # Add tools: install more npm packages in inference/mcp/Dockerfile,
+  # then add more mcp_* services below pointing to those packages.
+  mcp_playwright:
+    build:
+      context: ./inference/playwright
+    ports:
+      - "8091:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - agent_network
+
+  mcp_airbnb:
+    build:
+      context: ./inference/mcp
+    ports:
+      - "8090:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - agent_network
+
+  livekit_agent:
+    build:
+      context: ./livekit_agent
+    volumes:
+      - agent-cache:/app/.cache
+    env_file:
+      - .env
+    environment:
+      - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
+      - LIVEKIT_HOST=${LIVEKIT_URL:-ws://livekit:7880}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+      - XDG_CACHE_HOME=/app/.cache
+      - HF_HOME=/app/.cache/huggingface
+      - UV_CACHE_DIR=/app/.cache/uv
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-no-key-needed}
+      - LLAMA_BASE_URL=http://host.docker.internal:11434/v1
+      - LLAMA_MODEL=${LLAMA_MODEL:-gemma4:e4b}
+      - STT_BASE_URL=http://whisper:80/v1
+      - STT_MODEL=${STT_MODEL:-Systran/faster-whisper-small}
+      - TTS_BASE_URL=http://kokoro:8880/v1
+      - TTS_VOICE=${TTS_VOICE:-af_nova}
+      - MCP_AIRBNB_URL=http://mcp_airbnb:8080/mcp
+      - MCP_PLAYWRIGHT_URL=http://mcp_playwright:8080/mcp
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      # Add more MCP URLs here as you add services, e.g.:
+      # MCP_SEARCH_URL=http://mcp_search:8080/mcp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      livekit:
+        condition: service_started
+      kokoro:
+        condition: service_healthy
+      whisper:
+        condition: service_healthy
+      mcp_airbnb:
+        condition: service_healthy
+      mcp_playwright:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/ > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 180s
+    restart: unless-stopped
+    networks:
+      - agent_network
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_LIVEKIT_URL=ws://localhost:7880
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
+    depends_on:
+      livekit:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - agent_network
+
+volumes:
+  whisper-data:
+  agent-cache:
+
+networks:
+  agent_network:
+    driver: bridge
