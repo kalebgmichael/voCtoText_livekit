@@ -12,6 +12,9 @@ logging.basicConfig(level=logging.INFO)
 
 MODEL_ID = os.environ.get("VOXBOX_HF_REPO_ID", "Systran/faster-whisper-small")
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
+# "cuda" for GPU container, "cpu" for CPU container
+DEVICE = os.environ.get("VOXBOX_DEVICE", "cpu")
+COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
 
 model: Optional[WhisperModel] = None
 
@@ -19,8 +22,8 @@ model: Optional[WhisperModel] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global model
-    logger.info("Loading model %s into %s", MODEL_ID, DATA_DIR)
-    model = WhisperModel(MODEL_ID, device="cpu", compute_type="int8", download_root=DATA_DIR)
+    logger.info("Loading model %s into %s on %s", MODEL_ID, DATA_DIR, DEVICE)
+    model = WhisperModel(MODEL_ID, device=DEVICE, compute_type=COMPUTE_TYPE, download_root=DATA_DIR)
     logger.info("Model loaded")
     yield
 

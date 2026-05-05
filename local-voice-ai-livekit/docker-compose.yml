@@ -1,6 +1,26 @@
 services:
+  ollama_proxy:
+    image: alpine/socat
+    network_mode: host
+    command: TCP-LISTEN:11435,fork,reuseaddr TCP:127.0.0.1:11434
+    restart: unless-stopped
+
+  nginx_ssl:
+    image: nginx:alpine
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./nginx-ssl.conf:/etc/nginx/conf.d/default.conf
+      - ./nginx-ssl/cert.pem:/etc/nginx/ssl/cert.pem:ro
+      - ./nginx-ssl/key.pem:/etc/nginx/ssl/key.pem:ro
+    networks:
+      - agent_network
+    depends_on:
+      - frontend
+    restart: unless-stopped
+
   kokoro:
-    image: ${KOKORO_IMAGE:-ghcr.io/remsky/kokoro-fastapi-cpu:latest}
+    image: ${KOKORO_IMAGE:-ghcr.io/remsky/kokoro-fastapi-gpu:latest}
     ports:
       - "8880:8880"
     healthcheck:
@@ -12,6 +32,13 @@ services:
     restart: unless-stopped
     networks:
       - agent_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   livekit:
     image: livekit/livekit-server:latest
@@ -35,11 +62,13 @@ services:
   whisper:
     build:
       context: ./inference/whisper
+      dockerfile: Dockerfile.gpu
     volumes:
       - whisper-data:/data
     environment:
       - VOXBOX_HF_REPO_ID=${VOXBOX_HF_REPO_ID:-Systran/faster-whisper-small}
       - DATA_DIR=/data
+      - VOXBOX_DEVICE=cuda
     ports:
       - "11437:80"
     healthcheck:
@@ -51,6 +80,13 @@ services:
     restart: unless-stopped
     networks:
       - agent_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # Self-hosted MCP gateway — supergateway bridges stdio MCP servers to HTTP.
   # Add tools: install more npm packages in inference/mcp/Dockerfile,
@@ -101,8 +137,8 @@ services:
       - HF_HOME=/app/.cache/huggingface
       - UV_CACHE_DIR=/app/.cache/uv
       - OPENAI_API_KEY=${OPENAI_API_KEY:-no-key-needed}
-      - LLAMA_BASE_URL=http://host.docker.internal:11434/v1
-      - LLAMA_MODEL=${LLAMA_MODEL:-gemma4:e4b}
+      - LLAMA_BASE_URL=http://192.168.137.101:11435/v1
+      - LLAMA_MODEL=${LLAMA_MODEL:-llama3.1:8b}
       - STT_BASE_URL=http://whisper:80/v1
       - STT_MODEL=${STT_MODEL:-Systran/faster-whisper-small}
       - TTS_BASE_URL=http://kokoro:8880/v1
@@ -143,7 +179,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_LIVEKIT_URL=ws://localhost:7880
+      - NEXT_PUBLIC_LIVEKIT_URL=ws://192.168.137.101:7880
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_API_KEY=devkey
       - LIVEKIT_API_SECRET=secret
