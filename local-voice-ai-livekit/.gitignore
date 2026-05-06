@@ -1,6 +1,10 @@
 venv/
 inference/llama/models/
 
+# Claude Code
+.claude/
+CLAUDE.md
+
 # Python cache artifacts
 **/__pycache__/
 *.pyc
